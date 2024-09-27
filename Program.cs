@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Threading.Tasks;
 using Discord;
-using Discord.Commands;
 using Discord.WebSocket;
 using Microsoft.Extensions.DependencyInjection;
 using RestSharp;
@@ -10,7 +9,6 @@ using Newtonsoft.Json.Linq;
 class Program
 {
     private DiscordSocketClient _client;
-    private CommandService _commands;
     private IServiceProvider _services;
 
     static void Main(string[] args) => new Program().RunBotAsync().GetAwaiter().GetResult();
@@ -18,17 +16,15 @@ class Program
     public async Task RunBotAsync()
     {
         _client = new DiscordSocketClient();
-        _commands = new CommandService();
         _services = new ServiceCollection()
             .AddSingleton(_client)
-            .AddSingleton(_commands)
             .BuildServiceProvider();
 
         string token = Environment.GetEnvironmentVariable("DISCORD_TOKEN");
 
         _client.Log += _client_Log;
-
-        await RegisterCommandsAsync();
+        _client.Ready += Client_Ready;
+        _client.SlashCommandExecuted += SlashCommandHandler;
 
         await _client.LoginAsync(TokenType.Bot, token);
         await _client.StartAsync();
@@ -42,32 +38,39 @@ class Program
         return Task.CompletedTask;
     }
 
-    public async Task RegisterCommandsAsync()
+    public async Task Client_Ready()
     {
-        _client.MessageReceived += HandleCommandAsync;
-        await _commands.AddModulesAsync(System.Reflection.Assembly.GetEntryAssembly(), _services);
-    }
+        var globalCommand = new SlashCommandBuilder()
+            .WithName("create_issue")
+            .WithDescription("Create a new issue in Gitea")
+            .AddOption("repo", ApplicationCommandOptionType.String, "The repository name", isRequired: true)
+            .AddOption("title", ApplicationCommandOptionType.String, "The issue title", isRequired: true)
+            .AddOption("body", ApplicationCommandOptionType.String, "The issue body", isRequired: true);
 
-    private async Task HandleCommandAsync(SocketMessage arg)
-    {
-        var message = arg as SocketUserMessage;
-        var context = new SocketCommandContext(_client, message);
-        if (message.Author.IsBot) return;
-
-        int argPos = 0;
-        if (message.HasStringPrefix("!", ref argPos))
+        try
         {
-            var result = await _commands.ExecuteAsync(context, argPos, _services);
-            if (!result.IsSuccess) Console.WriteLine(result.ErrorReason);
+            await _client.CreateGlobalApplicationCommandAsync(globalCommand.Build());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error creating slash command: {ex.Message}");
         }
     }
-}
 
-public class Commands : ModuleBase<SocketCommandContext>
-{
-    [Command("create_issue")]
-    public async Task CreateIssue(string repo, string title, [Remainder] string body)
+    private async Task SlashCommandHandler(SocketSlashCommand command)
     {
+        if (command.Data.Name == "create_issue")
+        {
+            await HandleCreateIssueCommand(command);
+        }
+    }
+
+    private async Task HandleCreateIssueCommand(SocketSlashCommand command)
+    {
+        var repo = (string)command.Data.Options.FirstOrDefault(x => x.Name == "repo")?.Value;
+        var title = (string)command.Data.Options.FirstOrDefault(x => x.Name == "title")?.Value;
+        var body = (string)command.Data.Options.FirstOrDefault(x => x.Name == "body")?.Value;
+
         string giteaUrl = Environment.GetEnvironmentVariable("GITEA_URL");
         string giteaToken = Environment.GetEnvironmentVariable("GITEA_TOKEN");
         string giteaOwner = Environment.GetEnvironmentVariable("GITEA_OWNER");
@@ -83,11 +86,11 @@ public class Commands : ModuleBase<SocketCommandContext>
         if (response.IsSuccessful)
         {
             var issue = JObject.Parse(response.Content);
-            await ReplyAsync($"Issue created: {issue["html_url"]}");
+            await command.RespondAsync($"Issue created: {issue["html_url"]}");
         }
         else
         {
-            await ReplyAsync($"Failed to create issue. Status code: {response.StatusCode}");
+            await command.RespondAsync($"Failed to create issue. Status code: {response.StatusCode}");
         }
     }
 }
