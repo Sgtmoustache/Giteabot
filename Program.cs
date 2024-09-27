@@ -72,7 +72,7 @@ class Program
         {
             // Replace GUILD_ID with the ID of your Discord server for testing
             // For global command, use: await _client.CreateGlobalApplicationCommandAsync(command.Build());
-            await _client.GetGuild(GUILD_ID).CreateApplicationCommandAsync(command.Build());
+            await _client.CreateGlobalApplicationCommandAsync(command.Build());
             Console.WriteLine("Slash command registered successfully.");
         }
         catch (Exception ex)
