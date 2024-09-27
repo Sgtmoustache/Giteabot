@@ -19,10 +19,16 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Tag the Docker image
-        run: docker tag giteabot:latest ghcr.io/${{ github.repository_owner }}/giteabot:${{ github.ref_name }}
+        run: |
+          lowercase_owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')  # Convert to lowercase
+          docker tag giteabot:latest ghcr.io/${lowercase_owner}/giteabot:${{ github.ref_name }}
 
       - name: Push the Docker image
-        run: docker push ghcr.io/${{ github.repository_owner }}/giteabot:${{ github.ref_name }}
+        run: |
+          lowercase_owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')  # Convert to lowercase
+          docker push ghcr.io/${lowercase_owner}/giteabot:${{ github.ref_name }}
 
       - name: Output Docker Image URL
-        run: echo "Docker Image URL - ghcr.io/${{ github.repository_owner }}/giteabot:${{ github.ref_name }}"
+        run: |
+          lowercase_owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')  # Convert to lowercase
+          echo "Docker Image URL - ghcr.io/${lowercase_owner}/giteabot:${{ github.ref_name }}"
