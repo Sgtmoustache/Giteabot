@@ -182,7 +182,21 @@ class Program
         {
             var issue = JObject.Parse(response.Content);
             Console.WriteLine($"Successfully created issue. URL: {issue["html_url"]}");
-            await command.RespondAsync($"Issue created: {issue["html_url"]}");
+
+            // Create an embed message
+            var embed = new EmbedBuilder()
+                .WithTitle($"New Issue Created: {title}")
+                .WithUrl((string)issue["html_url"])
+                .WithColor(Color.Green)
+                .AddField("Title", title, true)
+                .AddField("Body", body ?? "No description", true)
+                .AddField("Labels", labelNames ?? "None", true)
+                .AddField("Milestone", milestone ?? "None", true)
+                .AddField("Project ID", _defaultProjectId?.ToString() ?? "None", true)
+                .WithFooter($"Created by {command.User.Username}")
+                .Build();
+
+            await command.RespondAsync(embed: embed);
         }
         else
         {
