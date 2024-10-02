@@ -3,6 +3,9 @@ using Discord.WebSocket;
 using Microsoft.Extensions.DependencyInjection;
 using RestSharp;
 using Newtonsoft.Json.Linq;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
 
 class Program
 {
@@ -13,6 +16,9 @@ class Program
     private string _giteaOwner;
     private string _giteaRepo;
     private long? _defaultProjectId;
+    private ulong _updateChannelId;
+    private string _webhookUrl;
+    private int _webhookPort;
 
     static void Main(string[] args)
     {
@@ -40,6 +46,9 @@ class Program
         _giteaOwner = Environment.GetEnvironmentVariable("GITEA_OWNER");
         _giteaRepo = Environment.GetEnvironmentVariable("GITEA_REPO");
         string defaultProjectIdString = Environment.GetEnvironmentVariable("DEFAULT_PROJECT_ID");
+        _updateChannelId = ulong.Parse(Environment.GetEnvironmentVariable("UPDATE_CHANNEL_ID"));
+        _webhookUrl = Environment.GetEnvironmentVariable("WEBHOOK_URL") ?? "http://0.0.0.0";
+        _webhookPort = int.Parse(Environment.GetEnvironmentVariable("WEBHOOK_PORT") ?? "3000");
 
         if (!string.IsNullOrEmpty(defaultProjectIdString) && long.TryParse(defaultProjectIdString, out long projectId))
         {
@@ -56,6 +65,9 @@ class Program
         Console.WriteLine($"Gitea Repo: {_giteaRepo}");
         Console.WriteLine($"Discord Token length: {token?.Length ?? 0}");
         Console.WriteLine($"Gitea Token length: {_giteaToken?.Length ?? 0}");
+        Console.WriteLine($"Update Channel ID: {_updateChannelId}");
+        Console.WriteLine($"Webhook URL: {_webhookUrl}");
+        Console.WriteLine($"Webhook Port: {_webhookPort}");
 
         _client.Log += _client_Log;
         _client.Ready += Client_Ready;
@@ -66,9 +78,13 @@ class Program
         Console.WriteLine("Starting Discord client...");
         await _client.StartAsync();
 
+        Console.WriteLine("Starting webhook listener...");
+        await StartWebhookListener();
+
         Console.WriteLine("Bot is now running. Press Ctrl+C to exit.");
         await Task.Delay(-1);
     }
+
     private Task _client_Log(LogMessage arg)
     {
         Console.WriteLine($"Discord.Net: {arg}");
@@ -99,8 +115,6 @@ class Program
                     choices: milestones.Select(m => new ApplicationCommandOptionChoiceProperties { Name = m, Value = m }).ToArray());
 
             Console.WriteLine("Slash command built. Attempting to register with Discord...");
-            // Replace GUILD_ID with the ID of your Discord server for testing
-            // For global command, use: await _client.CreateGlobalApplicationCommandAsync(command.Build());
             var guildCommand = await _client.CreateGlobalApplicationCommandAsync(command.Build());
             Console.WriteLine($"Slash command registered successfully. Command ID: {guildCommand.Id}");
         }
@@ -136,10 +150,10 @@ class Program
         request.AddHeader("Authorization", $"token {_giteaToken}");
 
         var bodyObject = new Dictionary<string, object>
-    {
-        { "title", title },
-        { "body", body }
-    };
+        {
+            { "title", title },
+            { "body", body }
+        };
 
         if (!string.IsNullOrEmpty(labelNames))
         {
@@ -183,7 +197,6 @@ class Program
             var issue = JObject.Parse(response.Content);
             Console.WriteLine($"Successfully created issue. URL: {issue["html_url"]}");
 
-            // Create an embed message
             var embed = new EmbedBuilder()
                 .WithTitle($"New Issue Created: {title}")
                 .WithUrl((string)issue["html_url"])
@@ -273,5 +286,100 @@ class Program
             return milestones.Select(m => (string)m["title"]).ToList();
         }
         return new List<string>();
+    }
+
+    private async Task StartWebhookListener()
+    {
+        await Host.CreateDefaultBuilder()
+            .ConfigureWebHostDefaults(webBuilder =>
+            {
+                webBuilder.Configure(app =>
+                {
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints =>
+                    {
+                        endpoints.MapPost("/webhook", async context =>
+                        {
+                            using var reader = new StreamReader(context.Request.Body);
+                            var body = await reader.ReadToEndAsync();
+                            await HandleWebhook(body, context.Request.Headers["X-Gitea-Event"]);
+                            await context.Response.WriteAsync("Webhook received");
+                        });
+                    });
+                })
+                .UseUrls($"{_webhookUrl}:{_webhookPort}");
+            })
+            .Build()
+            .RunAsync();
+    }
+
+    private async Task HandleWebhook(string payload, string eventType)
+    {
+        var json = JObject.Parse(payload);
+        var channel = _client.GetChannel(_updateChannelId) as IMessageChannel;
+
+        if (channel == null)
+        {
+            Console.WriteLine($"Error: Channel with ID {_updateChannelId} not found");
+            return;
+        }
+
+        EmbedBuilder embed = new EmbedBuilder();
+
+        switch (eventType)
+        {
+            case "pull_request":
+                var action = json["action"].ToString();
+                var prTitle = json["pull_request"]["title"].ToString();
+                var prUrl = json["pull_request"]["html_url"].ToString();
+                var prUser = json["pull_request"]["user"]["username"].ToString();
+
+                if (action == "opened")
+                {
+                    embed.WithTitle("New Merge Request")
+                         .WithDescription($"[{prTitle}]({prUrl})")
+                         .WithColor(Color.Blue)
+                         .AddField("Created by", prUser);
+                }
+                else if (action == "closed" && json["pull_request"]["merged"].ToObject<bool>())
+                {
+                    embed.WithTitle("Merge Request Merged")
+                         .WithDescription($"[{prTitle}]({prUrl})")
+                         .WithColor(Color.Green)
+                         .AddField("Merged by", prUser);
+                }
+                break;
+
+            case "issues":
+                action = json["action"].ToString();
+                var issueTitle = json["issue"]["title"].ToString();
+                var issueUrl = json["issue"]["html_url"].ToString();
+                var issueUser = json["issue"]["user"]["username"].ToString();
+
+                if (action == "opened")
+                {
+                    embed.WithTitle("New Issue")
+                         .WithDescription($"[{issueTitle}]({issueUrl})")
+                         .WithColor(Color.Orange)
+                         .AddField("Created by", issueUser);
+                }
+                else if (action == "closed")
+                {
+                    embed.WithTitle("Issue Closed")
+                         .WithDescription($"[{issueTitle}]({issueUrl})")
+                         .WithColor(Color.Red)
+                         .AddField("Closed by", issueUser);
+                }
+                break;
+
+            default:
+                Console.WriteLine($"Unhandled event type: {eventType}");
+                return;
+        }
+
+        if (embed.Fields.Count > 0)
+        {
+            await channel.SendMessageAsync(embed: embed.Build());
+        }
     }
 }
